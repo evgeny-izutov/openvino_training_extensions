@@ -76,40 +76,47 @@ def collect_records(data_sources, valid_video_names, mean_sign_duration=0.8, spe
                 num_skipped_records += 1
                 continue
 
-            label = record['label']
-            expected_sign_duration = speed_factor * mean_sign_duration * float(record['fps'])
-            expected_clip_duration = expected_sign_duration + preparation_time * float(record['fps'])
-            real_clip_duration = float(end_frame - start_frame)
-
-            if real_clip_duration > expected_clip_duration:
-                left_duration = real_clip_duration - preparation_time * float(record['fps'])
-
-                ratio = left_duration / expected_sign_duration
-                num_repeats = int(np.round(ratio))
-
-                num_segments = num_repeats + 1 if num_repeats > 0 else 2
-                segment_length = real_clip_duration / float(num_segments)
-
-                center_frame = start_frame + segment_length  # get the first most probable position
-                start_frame = int(center_frame - 0.5 * expected_sign_duration)
-                end_frame = int(center_frame + 0.5 * expected_sign_duration)
-                out_limits = [(start_frame, end_frame)]
+            if 'video_start' in record and 'video_end' in record:
+                out_limits = [(record['start'], record['end'], record['video_start'], record['video_end'])]
             else:
-                center_frame = 0.5 * (start_frame + end_frame)
-                trg_sign_duration = np.minimum(real_clip_duration, expected_sign_duration)
-                start_frame = int(center_frame - 0.5 * trg_sign_duration)
-                end_frame = int(center_frame + 0.5 * trg_sign_duration)
-                out_limits = [(start_frame, end_frame)]
+                expected_sign_duration = speed_factor * mean_sign_duration * float(record['fps'])
+                expected_clip_duration = expected_sign_duration + preparation_time * float(record['fps'])
+                real_clip_duration = float(end_frame - start_frame)
 
-            for fixed_start_frame, fixed_end_frame in out_limits:
-                out_records.append(dict(label=label,
-                                        signer_id=record['signer_id'],
-                                        start=fixed_start_frame,
-                                        end=fixed_end_frame,
-                                        bbox=dict(xmin=bbox[1], ymin=bbox[0], xmax=bbox[3], ymax=bbox[2]),
-                                        video_name=video_name,
-                                        fps=float(record['fps']),
-                                        type=data_type))
+                if real_clip_duration > expected_clip_duration:
+                    left_duration = real_clip_duration - preparation_time * float(record['fps'])
+
+                    ratio = left_duration / expected_sign_duration
+                    num_repeats = int(np.round(ratio))
+
+                    num_segments = num_repeats + 1 if num_repeats > 0 else 2
+                    segment_length = real_clip_duration / float(num_segments)
+
+                    center_frame = start_frame + segment_length  # get the first most probable position
+                    start_frame = int(center_frame - 0.5 * expected_sign_duration)
+                    end_frame = int(center_frame + 0.5 * expected_sign_duration)
+                    out_limits = [(start_frame, end_frame, None, None)]
+                else:
+                    center_frame = 0.5 * (start_frame + end_frame)
+                    trg_sign_duration = np.minimum(real_clip_duration, expected_sign_duration)
+                    start_frame = int(center_frame - 0.5 * trg_sign_duration)
+                    end_frame = int(center_frame + 0.5 * trg_sign_duration)
+                    out_limits = [(start_frame, end_frame, None, None)]
+
+            for fixed_start_frame, fixed_end_frame, video_start, video_end in out_limits:
+                new_record = dict(
+                    label=record['label'],
+                    signer_id=record['signer_id'],
+                    start=fixed_start_frame,
+                    end=fixed_end_frame,
+                    video_start=video_start,
+                    video_end=video_end,
+                    bbox=dict(xmin=bbox[1], ymin=bbox[0], xmax=bbox[3], ymax=bbox[2]),
+                    video_name=video_name,
+                    fps=float(record['fps']),
+                    type=data_type
+                )
+                out_records.append(new_record)
 
     if num_skipped_records > 0:
         print('Warning. Skipped {} records.'.format(num_skipped_records))
@@ -219,13 +226,17 @@ def extract_frames(records, videos_dir, video_name_template, out_dir, image_name
         for record_id in range(len(video_records)):
             record = video_records[record_id]
 
-            left_limit = video_records[record_id - 1]['end'] if record_id > 0 else 0
-            right_limit = video_records[record_id + 1]['start'] if record_id + 1 < len(video_records) else num_frames
+            if record['video_start'] is None or record['video_end'] is None:
+                left_limit = video_records[record_id - 1]['end'] \
+                             if record_id > 0 else 0
+                right_limit = video_records[record_id + 1]['start'] \
+                              if record_id + 1 < len(video_records) else num_frames
 
-            fps_factor = trg_fps / record['fps']
-            time_delta = np.maximum(int(target_num_frames / fps_factor), record['end'] - record['start'])
-            record['video_start'] = np.maximum(left_limit, record['end'] - time_delta)
-            record['video_end'] = np.minimum(right_limit, record['start'] + time_delta)
+                fps_factor = trg_fps / record['fps']
+                time_delta = np.maximum(int(target_num_frames / fps_factor), record['end'] - record['start'])
+                record['video_start'] = np.maximum(left_limit, record['end'] - time_delta)
+                record['video_end'] = np.minimum(right_limit, record['start'] + time_delta)
+
             for i in range(record['video_start'], record['video_end']):
                 if i not in frame_ids_map:
                     frame_ids_map[i] = []
